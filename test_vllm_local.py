@@ -6,8 +6,13 @@ import urllib.error
 import urllib.request
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
-MODEL = os.environ.get("MODEL", "Qwen/Qwen3.5-4B")
 PROMPT = os.environ.get("PROMPT", "Explain in 3 sentences what a GPU MIG slice is.")
+
+
+def get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer dummy"}, method="GET")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def post_json(url: str, payload: dict) -> dict:
@@ -24,8 +29,12 @@ def post_json(url: str, payload: dict) -> dict:
 
 def main() -> int:
     try:
+        models = get_json(f"{BASE_URL}/v1/models")
+        model_id = models["data"][0]["id"]
+        print(f"Using model: {model_id}")
+
         payload = {
-            "model": MODEL,
+            "model": model_id,
             "messages": [
                 {"role": "system", "content": "You are a concise helpful assistant."},
                 {"role": "user", "content": PROMPT},
@@ -34,6 +43,7 @@ def main() -> int:
             "max_tokens": 256,
         }
         out = post_json(f"{BASE_URL}/v1/chat/completions", payload)
+        print("\nResponse:\n")
         print(out["choices"][0]["message"]["content"])
         return 0
     except urllib.error.HTTPError as e:
