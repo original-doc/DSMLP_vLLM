@@ -8,3 +8,9 @@ Then use your pwd and Duo to login. As DSMLP requested, use launch.sh to start s
 launch.sh -c 8 -m 32 -g 1 -v a30 -W CSE252D_SP26_A00
 ```
 Note that the a30 might be sliced and only 12GB CUDA memory is available.
+
+Then run
+```
+bash setup_qwen35_vllm_dsmlp.sh
+```
+on the server. Wait for 
