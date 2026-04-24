@@ -1,46 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run this INSIDE your GPU pod/container, not on dsmlp-login.
-#
-# Typical flow from dsmlp-login:
-#   IDENTITY_PROXY_PORTS=1 launch.sh -g 1 -b
-#   kubectl get pod
-#   kubesh <your-pod-name>
-# Then inside the pod:
-#   bash setup_qwen35_vllm_dsmlp_fixed.sh
-#
-# Optional overrides:
-#   ENV_NAME=vllm-qwen35 PYTHON_VERSION=3.10 MODEL_ID=Qwen/Qwen3.5-4B \
-#   MODEL_DIR=/private/home/$USER/private/models/Qwen3.5-4B \
-#   HF_HOME=/private/home/$USER/private/hf_cache \
-#   PORT=8000 MAX_MODEL_LEN=512 GPU_MEMORY_UTILIZATION=0.80 \
-#   bash setup_qwen35_vllm_dsmlp_fixed.sh
-
 ENV_NAME="${ENV_NAME:-vllm-qwen35}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
 MODEL_ID="${MODEL_ID:-Qwen/Qwen3.5-2B}"
 PORT="${PORT:-8000}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-512}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.99}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-256}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.70}"
 LOG_DIR="${LOG_DIR:-$HOME/vllm-logs}"
 
-PRIVATE_ROOT="/home/$USER/private"
+# Always use paths inside your writable home area.
+PRIVATE_ROOT="$HOME/private"
+DEFAULT_STORAGE_ROOT="$HOME"
 if [[ -d "$PRIVATE_ROOT" ]]; then
   DEFAULT_STORAGE_ROOT="$PRIVATE_ROOT"
-else
-  DEFAULT_STORAGE_ROOT="$HOME"
 fi
 
-HF_HOME="${HF_HOME:-$PRIVATE_ROOT/hf_cache}"
-HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
-TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
-MODEL_DIR="${MODEL_DIR:-$PRIVATE_ROOT/models/$(basename "$MODEL_ID")}"
+# Ignore stale exported values from old sessions unless user explicitly passes them on this command line.
+HF_HOME="${HF_HOME_OVERRIDE:-$DEFAULT_STORAGE_ROOT/hf_cache}"
+HF_HUB_CACHE="${HF_HUB_CACHE_OVERRIDE:-$HF_HOME/hub}"
+TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE_OVERRIDE:-$HF_HOME/transformers}"
+
+# Use repo ID for serving; don't serve from local path.
+MODEL_SOURCE="${MODEL_SOURCE:-$MODEL_ID}"
 
 LOG_FILE="$LOG_DIR/vllm-${PORT}.log"
 PID_FILE="$LOG_DIR/vllm-${PORT}.pid"
 
-mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TRANSFORMERS_CACHE" "$LOG_DIR" "$(dirname "$MODEL_DIR")"
+mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TRANSFORMERS_CACHE" "$LOG_DIR"
 
 export HF_HOME
 export HF_HUB_CACHE
@@ -56,11 +44,9 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
   exit 1
 fi
 
-# Important: clear any poisoned loader vars in the CURRENT shell.
 unset LD_PRELOAD || true
 unset LD_LIBRARY_PATH || true
 
-# shellcheck disable=SC1091
 source /opt/conda/etc/profile.d/conda.sh
 
 if ! conda env list | awk 'NR>2 && $1 !~ /^#/ {print $1}' | grep -qx "$ENV_NAME"; then
@@ -73,8 +59,6 @@ conda activate "$ENV_NAME"
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -U "huggingface_hub[cli]" requests openai
 python -m pip install -U --extra-index-url https://wheels.vllm.ai/nightly vllm
-
-# Ensure newer runtime libs are present in the env.
 conda install -y -c conda-forge "libstdcxx-ng>=14" "libgcc-ng>=14" sqlite
 
 if ! command -v hf >/dev/null 2>&1; then
@@ -82,7 +66,6 @@ if ! command -v hf >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Sanity check: sqlite import"
 python - <<'PY'
 import sqlite3
 print("sqlite3 import OK")
@@ -94,11 +77,11 @@ hf auth whoami || true
 echo "Storage paths:"
 echo "  HF_HOME=$HF_HOME"
 echo "  HF_HUB_CACHE=$HF_HUB_CACHE"
-echo "  MODEL_DIR=$MODEL_DIR"
 echo
 
-echo "Downloading model to: $MODEL_DIR"
-hf download "$MODEL_ID" --local-dir "$MODEL_DIR"
+# Optional warm download into cache.
+echo "Caching model repo: $MODEL_ID"
+hf download "$MODEL_ID" --cache-dir "$HF_HUB_CACHE" >/dev/null
 
 if [[ -f "$PID_FILE" ]]; then
   OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -113,31 +96,31 @@ fi
 echo
 cat <<EOM
 Starting vLLM with:
-  model id: $MODEL_ID
-  model dir: $MODEL_DIR
+  model source: $MODEL_SOURCE
   port: $PORT
   max model len: $MAX_MODEL_LEN
+  max num seqs: $MAX_NUM_SEQS
   gpu memory utilization: $GPU_MEMORY_UTILIZATION
 
 Notes:
-- This uses Python 3.10.
-- Model/cache storage defaults to /private when available.
-- Qwen3.5-4B can still be tight on a 12 GB MIG slice.
-- If it OOMs, try MAX_MODEL_LEN=256.
+- This serves from the Hugging Face repo ID, not a local model path.
+- Cache is stored under: $HF_HUB_CACHE
+- Qwen3.5-2B is a safer fit than 4B for your 12 GB MIG slice.
 EOM
 
-echo
 nohup env \
   HF_HOME="$HF_HOME" \
   HF_HUB_CACHE="$HF_HUB_CACHE" \
   TRANSFORMERS_CACHE="$TRANSFORMERS_CACHE" \
   LD_LIBRARY_PATH="$CONDA_PREFIX/lib" \
   LD_PRELOAD="$CONDA_PREFIX/lib/libstdc++.so.6" \
-  "$CONDA_PREFIX/bin/vllm" serve "$MODEL_DIR" \
+  "$CONDA_PREFIX/bin/vllm" serve "$MODEL_SOURCE" \
+    --download-dir "$HF_HUB_CACHE" \
     --host 0.0.0.0 \
     --port "$PORT" \
-    --language-model-only \
+    --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
+    --max-num-seqs "$MAX_NUM_SEQS" \
     --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
     > "$LOG_FILE" 2>&1 &
 
