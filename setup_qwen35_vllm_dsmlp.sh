@@ -8,21 +8,15 @@ PORT="${PORT:-8000}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-256}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.70}"
-LOG_DIR="${LOG_DIR:-$HOME/vllm-logs}"
 
-# Always use paths inside your writable home area.
-PRIVATE_ROOT="$HOME/private"
-DEFAULT_STORAGE_ROOT="$HOME"
-if [[ -d "$PRIVATE_ROOT" ]]; then
-  DEFAULT_STORAGE_ROOT="$PRIVATE_ROOT"
-fi
+# Everything stays in the CURRENT working directory.
+WORK_ROOT="${WORK_ROOT:-$(pwd)}"
+HF_HOME="${HF_HOME:-$WORK_ROOT/hf_cache}"
+HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+LOG_DIR="${LOG_DIR:-$WORK_ROOT/vllm-logs}"
 
-# Ignore stale exported values from old sessions unless user explicitly passes them on this command line.
-HF_HOME="${HF_HOME_OVERRIDE:-$DEFAULT_STORAGE_ROOT/hf_cache}"
-HF_HUB_CACHE="${HF_HUB_CACHE_OVERRIDE:-$HF_HOME/hub}"
-TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE_OVERRIDE:-$HF_HOME/transformers}"
-
-# Use repo ID for serving; don't serve from local path.
+# Serve from repo ID, not local path.
 MODEL_SOURCE="${MODEL_SOURCE:-$MODEL_ID}"
 
 LOG_FILE="$LOG_DIR/vllm-${PORT}.log"
@@ -34,8 +28,12 @@ export HF_HOME
 export HF_HUB_CACHE
 export TRANSFORMERS_CACHE
 
+unset LD_PRELOAD || true
+unset LD_LIBRARY_PATH || true
+unset MODEL_DIR || true
+
 if ! command -v conda >/dev/null 2>&1; then
-  echo "ERROR: conda was not found in PATH." >&2
+  echo "ERROR: conda not found in PATH." >&2
   exit 1
 fi
 
@@ -44,9 +42,7 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
   exit 1
 fi
 
-unset LD_PRELOAD || true
-unset LD_LIBRARY_PATH || true
-
+# shellcheck disable=SC1091
 source /opt/conda/etc/profile.d/conda.sh
 
 if ! conda env list | awk 'NR>2 && $1 !~ /^#/ {print $1}' | grep -qx "$ENV_NAME"; then
@@ -61,26 +57,22 @@ python -m pip install -U "huggingface_hub[cli]" requests openai
 python -m pip install -U --extra-index-url https://wheels.vllm.ai/nightly vllm
 conda install -y -c conda-forge "libstdcxx-ng>=14" "libgcc-ng>=14" sqlite
 
-if ! command -v hf >/dev/null 2>&1; then
-  echo "ERROR: hf CLI was not installed correctly." >&2
-  exit 1
-fi
-
 python - <<'PY'
 import sqlite3
 print("sqlite3 import OK")
 PY
 
-echo "Hugging Face auth status (non-fatal if not logged in):"
-hf auth whoami || true
-
-echo "Storage paths:"
+echo "Using workspace storage:"
+echo "  WORK_ROOT=$WORK_ROOT"
 echo "  HF_HOME=$HF_HOME"
 echo "  HF_HUB_CACHE=$HF_HUB_CACHE"
+echo "  LOG_DIR=$LOG_DIR"
 echo
 
-# Optional warm download into cache.
-echo "Caching model repo: $MODEL_ID"
+echo "Hugging Face auth status:"
+hf auth whoami || true
+
+echo "Pre-caching model into workspace cache: $MODEL_ID"
 hf download "$MODEL_ID" --cache-dir "$HF_HUB_CACHE" >/dev/null
 
 if [[ -f "$PID_FILE" ]]; then
@@ -93,21 +85,7 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
-echo
-cat <<EOM
-Starting vLLM with:
-  model source: $MODEL_SOURCE
-  port: $PORT
-  max model len: $MAX_MODEL_LEN
-  max num seqs: $MAX_NUM_SEQS
-  gpu memory utilization: $GPU_MEMORY_UTILIZATION
-
-Notes:
-- This serves from the Hugging Face repo ID, not a local model path.
-- Cache is stored under: $HF_HUB_CACHE
-- Qwen3.5-2B is a safer fit than 4B for your 12 GB MIG slice.
-EOM
-
+echo "Starting vLLM..."
 nohup env \
   HF_HOME="$HF_HOME" \
   HF_HUB_CACHE="$HF_HUB_CACHE" \
@@ -142,6 +120,6 @@ for _ in $(seq 1 180); do
 done
 
 echo
-echo "vLLM did not become ready in time. Check the log with:" >&2
+echo "vLLM did not become ready in time. Check:"
 echo "  tail -n 200 $LOG_FILE" >&2
 exit 1
