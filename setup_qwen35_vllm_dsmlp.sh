@@ -92,7 +92,6 @@ echo
 nohup vllm serve "$MODEL_DIR" \
   --host 0.0.0.0 \
   --port "$PORT" \
-  --language-model-only \
   --max-model-len "$MAX_MODEL_LEN" \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
   > "$LOG_FILE" 2>&1 &
