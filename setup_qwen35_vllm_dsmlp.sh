@@ -19,13 +19,13 @@ set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-vllm-qwen35}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
-MODEL_ID="${MODEL_ID:-Qwen/Qwen3.5-4B}"
+MODEL_ID="${MODEL_ID:-Qwen/Qwen3.5-2B}"
 PORT="${PORT:-8000}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-512}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.80}"
 LOG_DIR="${LOG_DIR:-$HOME/vllm-logs}"
 
-PRIVATE_ROOT="/private/home/$USER/private"
+PRIVATE_ROOT="/home/$USER/private"
 if [[ -d "$PRIVATE_ROOT" ]]; then
   DEFAULT_STORAGE_ROOT="$PRIVATE_ROOT"
 else
